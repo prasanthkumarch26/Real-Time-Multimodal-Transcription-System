@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import json
 import numpy as np
 import io
-from pydub import AudioSegment
+# pydub removed as we handle raw PCM directly
 
 from services.noise_reduction import reduce_noise
 from services.vad import is_speech
@@ -29,17 +29,10 @@ async def websocket_endpoint(websocket: WebSocket):
             audio_bytes = await websocket.receive_bytes()
             
             try:
-                # Convert bytes to pydub AudioSegment
-                # pydub can automatically detect format from file-like object using ffprobe/ffmpeg
-                audio_segment = AudioSegment.from_file(io.BytesIO(audio_bytes))
+                # Frontend now sends chunked raw 16kHz mono Int16 PCM bytes directly.
+                samples = np.frombuffer(audio_bytes, dtype=np.int16)
                 
-                # Convert to 16kHz mono (required by faster-whisper and VAD)
-                audio_segment = audio_segment.set_frame_rate(16000).set_channels(1)
-                
-                # Get raw audio data as numpy array (int16)
-                samples = np.array(audio_segment.get_array_of_samples())
-                
-                # Normalize to float32 between -1.0 and 1.0
+                # Normalize to float32 between -1.0 and 1.0 (Required by VAD & Whisper)
                 samples_float32 = samples.astype(np.float32) / 32768.0
                 
                 # 1. Voice Activity Detection
