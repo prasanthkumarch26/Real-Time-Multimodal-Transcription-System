@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+websockets
+faster-whisper
+numpy
+scipy
+noisereduce
+webrtcvad-wheels
+pydub
