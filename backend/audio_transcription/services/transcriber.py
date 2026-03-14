@@ -2,10 +2,10 @@ import numpy as np
 from faster_whisper import WhisperModel
 
 class AudioTranscriber:
-    def __init__(self, model_size="base", device="cpu", compute_type="int8"):
+    def __init__(self, model_size="distil-large-v3", device="cpu", compute_type="int8"):
         """
         Initializes the faster-whisper model.
-        Using 'base' model and 'int8' for faster CPU execution by default.
+        Using 'distil-large-v3' model and 'int8' for faster CPU execution by default.
         """
         self.model = WhisperModel(model_size, device=device, compute_type=compute_type)
 

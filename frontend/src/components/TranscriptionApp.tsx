@@ -62,7 +62,7 @@ export default function TranscriptionApp() {
         processorRef.current.disconnect();
         processorRef.current = null;
       }
-      if (audioContextRef.current) {
+      if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
         audioContextRef.current.close().catch(console.error);
         audioContextRef.current = null;
       }
@@ -140,7 +140,9 @@ export default function TranscriptionApp() {
     
     return () => {
       if (processorRef.current) processorRef.current.disconnect();
-      if (audioContextRef.current) audioContextRef.current.close().catch(console.error);
+      if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+        audioContextRef.current.close().catch(console.error);
+      }
     }
   }, [isRecording, mode]);
 

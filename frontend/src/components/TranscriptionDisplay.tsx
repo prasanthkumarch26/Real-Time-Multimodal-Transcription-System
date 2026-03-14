@@ -48,7 +48,7 @@ export default function TranscriptionDisplay({ transcription }: TranscriptionDis
               animate={{ opacity: 1, y: 0 }}
               className="flex flex-col gap-2"
             >
-              <p className="text-2xl md:text-4xl font-semibold leading-relaxed text-white drop-shadow-md">
+              <p className="text-xl md:text-2xl font-semibold leading-relaxed text-white drop-shadow-md">
                 {transcription}
               </p>
             </motion.div>
