@@ -2,12 +2,15 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import json
 import numpy as np
-import io
-# pydub removed as we handle raw PCM directly
+import logging
 
+from services.audio_buffer import SlidingAudioBuffer
 from services.noise_reduction import reduce_noise
 from services.vad import is_speech
 from services.transcriber import transcriber
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Audio Transcription Service")
 
@@ -19,46 +22,68 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.get("/health")
+async def health_check():
+    return {"status": "ok", "service": "audio_transcription"}
+
+
 @app.websocket("/attranscribe")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    print("Client connected to /attranscribe")
+    logger.info("Client connected to /attranscribe")
+
+    # Each WebSocket session gets its own buffer and context
+    session_buffer = SlidingAudioBuffer()
+    context_prompt = ""  # Rolling context for Whisper initial_prompt
+
     try:
         while True:
-            # Receive audio chunk (bytes) from frontend
+            # Receive raw PCM bytes from the AudioWorklet
+            # Frontend sends Float32Array binary (4 bytes per sample at 16kHz, mono)
             audio_bytes = await websocket.receive_bytes()
-            
+
             try:
-                # Frontend now sends chunked raw 16kHz mono Int16 PCM bytes directly.
-                samples = np.frombuffer(audio_bytes, dtype=np.int16)
-                
-                # Normalize to float32 between -1.0 and 1.0 (Required by VAD & Whisper)
-                samples_float32 = samples.astype(np.float32) / 32768.0
-                
-                # 1. Voice Activity Detection
-                if not is_speech(samples_float32, sample_rate=16000):
-                    # No speech detected, skip transcription
-                    print("No speech detected softly skipping...")
+                # Decode Float32 PCM sent by AudioWorklet
+                samples = np.frombuffer(audio_bytes, dtype=np.float32).copy()
+
+                if len(samples) == 0:
                     continue
-                    
-                # 2. Noise reduction
-                cleaned_audio = reduce_noise(samples_float32, sample_rate=16000)
-                
-                # 3. Transcribe using faster-whisper
-                text = transcriber.transcribe(cleaned_audio)
-                
+
+                # 1. Voice Activity Detection on this incoming chunk
+                if not is_speech(samples, sample_rate=16000):
+                    logger.debug("Silence detected — skipping chunk")
+                    continue
+
+                # 2. Accumulate into the sliding window buffer
+                window = session_buffer.add_samples(samples)
+
+                if window is None:
+                    # Not enough audio in the window yet
+                    continue
+
+                # 3. Noise reduction on the window
+                cleaned_audio = reduce_noise(window, sample_rate=16000)
+
+                # 4. Transcribe with context prompting
+                text = transcriber.transcribe(cleaned_audio, initial_prompt=context_prompt)
+
                 if text.strip():
+                    # Update rolling context with last ~100 words to keep prompt short
+                    all_words = (context_prompt + " " + text).split()
+                    context_prompt = " ".join(all_words[-100:])
+
                     response = {
                         "id": "AT",
-                        "Transcription": text
+                        "Transcription": text,
                     }
                     await websocket.send_text(json.dumps(response))
-                    print(f"Sent: {text}")
-                
+                    logger.info(f"Transcribed: {text}")
+
             except Exception as e:
-                print(f"Error processing audio chunk: {e}")
-                
+                logger.error(f"Error processing audio chunk: {e}", exc_info=True)
+
     except WebSocketDisconnect:
-        print("Client disconnected")
+        logger.info("Client disconnected from /attranscribe")
     except Exception as e:
-        print(f"WebSocket Error: {e}")
+        logger.error(f"WebSocket error: {e}", exc_info=True)
