@@ -33,50 +33,67 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     logger.info("Client connected to /attranscribe")
 
-    # Each WebSocket session gets its own buffer and context
+    # Per-session state
     session_buffer = SlidingAudioBuffer()
     context_prompt = ""  # Rolling context for Whisper initial_prompt
 
+    # Speech / silence state machine
+    # After SILENCE_CHUNKS_THRESHOLD consecutive silent 30ms chunks (~300ms),
+    # we consider the utterance finished and clear the buffer.
+    SILENCE_CHUNKS_THRESHOLD = 10
+    silence_streak = 0
+    is_active = False   # True while the user is speaking
+
     try:
         while True:
-            # Receive raw PCM bytes from the AudioWorklet
-            # Frontend sends Float32Array binary (4 bytes per sample at 16kHz, mono)
+            # Receive raw Float32 PCM bytes from the AudioWorklet (16kHz, mono)
             audio_bytes = await websocket.receive_bytes()
 
             try:
-                # Decode Float32 PCM sent by AudioWorklet
                 samples = np.frombuffer(audio_bytes, dtype=np.float32).copy()
-
                 if len(samples) == 0:
                     continue
 
-                # 1. Voice Activity Detection on this incoming chunk
-                if not is_speech(samples, sample_rate=16000):
-                    logger.debug("Silence detected — skipping chunk")
+                # ── 1. Voice Activity Detection ──────────────────────────────
+                speech_detected = is_speech(samples, sample_rate=16000)
+
+                if not speech_detected:
+                    silence_streak += 1
+
+                    if silence_streak >= SILENCE_CHUNKS_THRESHOLD and is_active:
+                        # Utterance just ended — wipe stale audio from buffer
+                        # so Whisper cannot re-transcribe old speech during silence
+                        session_buffer.clear()
+                        is_active = False
+                        context_prompt = ""   # fresh context for next utterance
+                        logger.info("Speech ended — buffer cleared, now idle")
+
+                    # Always skip transcription while silent
                     continue
 
-                # 2. Accumulate into the sliding window buffer
+                # ── 2. Speech active ──────────────────────────────────────────
+                silence_streak = 0
+                if not is_active:
+                    is_active = True
+                    logger.info("Speech started")
+
+                # ── 3. Accumulate into sliding window ─────────────────────────
                 window = session_buffer.add_samples(samples)
-
                 if window is None:
-                    # Not enough audio in the window yet
-                    continue
+                    continue   # window not full yet
 
-                # 3. Noise reduction on the window
+                # ── 4. Noise reduction ────────────────────────────────────────
                 cleaned_audio = reduce_noise(window, sample_rate=16000)
 
-                # 4. Transcribe with context prompting
+                # ── 5. Transcribe with context prompting ──────────────────────
                 text = transcriber.transcribe(cleaned_audio, initial_prompt=context_prompt)
 
                 if text.strip():
-                    # Update rolling context with last ~100 words to keep prompt short
+                    # Cap context at last 100 words to avoid prompt bloat
                     all_words = (context_prompt + " " + text).split()
                     context_prompt = " ".join(all_words[-100:])
 
-                    response = {
-                        "id": "AT",
-                        "Transcription": text,
-                    }
+                    response = {"id": "AT", "Transcription": text}
                     await websocket.send_text(json.dumps(response))
                     logger.info(f"Transcribed: {text}")
 
