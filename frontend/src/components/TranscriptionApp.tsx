@@ -96,11 +96,28 @@ export default function TranscriptionApp() {
       });
       workletNodeRef.current = workletNode;
 
-      // Receive Float32 PCM chunks from worklet and send over WebSocket
+      // ─── 600ms Micro-Batching Logic ─────────────────────────────────────────
+      // The AudioWorklet emits 30ms frames (480 samples).
+      // We accumulate 20 frames to reach exactly 600ms (9600 samples)
+      // before sending over WebSocket. This stabilizes backpressure!
+      let audioBuffer: number[] = [];
+      const SAMPLES_PER_600MS = 9600; // 16000 * 0.6
+
       workletNode.port.onmessage = (event: MessageEvent<Float32Array>) => {
         const chunk: Float32Array = event.data;
-        if (wsRef.current?.readyState === WebSocket.OPEN) {
-          wsRef.current.send(chunk.buffer);
+        
+        // Accumulate 30ms frames
+        for (let i = 0; i < chunk.length; i++) {
+          audioBuffer.push(chunk[i]);
+        }
+
+        // When we hit 600ms, batch it and send
+        if (audioBuffer.length >= SAMPLES_PER_600MS) {
+          const batchFloat32 = new Float32Array(audioBuffer.splice(0, SAMPLES_PER_600MS));
+          
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            wsRef.current.send(batchFloat32.buffer);
+          }
         }
       };
 
