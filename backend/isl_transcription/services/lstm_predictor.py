@@ -22,7 +22,12 @@ import logging
 logger = logging.getLogger(__name__)
 
 # ─── Vocabulary (must match training label order) ──────────────────────────
-ACTIONS = ["hello", "thanks", "iloveyou", "please", "yes", "no", "good"]
+ACTIONS_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "actions.txt")
+if os.path.exists(ACTIONS_PATH):
+    with open(ACTIONS_PATH, "r") as f:
+        ACTIONS = f.read().split(",")
+else:
+    ACTIONS = ["hello", "thanks", "iloveyou", "please", "yes", "no", "good"]
 SEQUENCE_LENGTH = 30      # frames per prediction window
 PREDICTION_THRESHOLD = 0.85  # confidence threshold — discard low-confidence preds
 

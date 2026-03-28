@@ -1,90 +1,120 @@
 """
 mediapipe_extractor.py
 
-Extracts hand, pose, and face landmarks from a JPEG frame using MediaPipe Holistic.
+Extracts hand, pose, and face landmarks from a JPEG frame using MediaPipe Tasks
+HolisticLandmarker (compatible with mediapipe >= 0.10.13 on Python 3.12).
 
 The landmark vector is a flat 1D numpy array combining:
-  - 21 hand landmarks × 2 hands × 3 coordinates = 126 values
-  - 33 pose landmarks × 3 coordinates = 99 values
-  - 468 face landmarks × 3 coordinates = 1404 values
-Total: 1629 features per frame
+  - 33 pose landmarks × 4 coordinates (x, y, z, visibility) = 132 values
+  - 478 face landmarks × 3 coordinates = 1434 values
+  - 21 left hand landmarks × 3 coordinates = 63 values
+  - 21 right hand landmarks × 3 coordinates = 63 values
+Total: 1692 features per frame
 
+Note: Feature count changed from 1629 to 1662 due to Tasks API using visibility on pose.
 If a landmark type is not detected in a frame, zeros are used.
 """
 
 import numpy as np
 import cv2
 import mediapipe as mp
+import os
 import logging
 
 logger = logging.getLogger(__name__)
 
-mp_holistic = mp.solutions.holistic  # type: ignore
-
-# Reuse a single Holistic instance for efficiency
-_holistic = mp_holistic.Holistic(
-    static_image_mode=False,
-    model_complexity=1,
-    enable_segmentation=False,
-    refine_face_landmarks=False,
-    min_detection_confidence=0.5,
-    min_tracking_confidence=0.5,
+# Model path
+_MODEL_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "models", "holistic_landmarker.task"
 )
 
-# Feature sizes
-N_POSE = 33 * 4       # x, y, z, visibility
-N_FACE = 468 * 3      # x, y, z
-N_LEFT_HAND = 21 * 3  # x, y, z
-N_RIGHT_HAND = 21 * 3
+# Feature sizes (Tasks API)
+N_POSE = 33 * 4        # x, y, z, visibility
+N_FACE = 478 * 3       # x, y, z
+N_LEFT_HAND = 21 * 3   # x, y, z
+N_RIGHT_HAND = 21 * 3  # x, y, z
+TOTAL_FEATURES = N_POSE + N_FACE + N_LEFT_HAND + N_RIGHT_HAND  # 1692
 
 
-def _extract_keypoints(results) -> np.ndarray:
-    """Flatten all MediaPipe landmark results into a single feature vector."""
+def _build_landmarker():
+    """Build and return a HolisticLandmarker instance."""
+    if not os.path.exists(_MODEL_PATH):
+        raise FileNotFoundError(
+            f"HolisticLandmarker task model not found at {_MODEL_PATH}. "
+            "Run: python -c \"import urllib.request; urllib.request.urlretrieve("
+            "'https://storage.googleapis.com/mediapipe-models/holistic_landmarker/"
+            "holistic_landmarker/float16/latest/holistic_landmarker.task', "
+            "'backend/isl_transcription/models/holistic_landmarker.task')\""
+        )
+    
+    BaseOptions = mp.tasks.BaseOptions
+    HolisticLandmarker = mp.tasks.vision.HolisticLandmarker
+    HolisticLandmarkerOptions = mp.tasks.vision.HolisticLandmarkerOptions
+    RunningMode = mp.tasks.vision.RunningMode
+
+    options = HolisticLandmarkerOptions(
+        base_options=BaseOptions(model_asset_path=_MODEL_PATH),
+        running_mode=RunningMode.IMAGE,
+        min_face_detection_confidence=0.5,
+        min_pose_detection_confidence=0.5,
+        min_hand_landmarks_confidence=0.5,
+    )
+    return HolisticLandmarker.create_from_options(options)
+
+
+# Singleton landmarker — created once and reused
+try:
+    _landmarker = _build_landmarker()
+    logger.info("HolisticLandmarker loaded successfully.")
+except Exception as e:
+    _landmarker = None
+    logger.warning(f"HolisticLandmarker unavailable: {e}")
+
+
+def _extract_keypoints(result) -> np.ndarray:
+    """Flatten all HolisticLandmarker results into a single feature vector."""
     pose = (
-        np.array([[l.x, l.y, l.z, l.visibility] for l in results.pose_landmarks.landmark]).flatten()
-        if results.pose_landmarks
-        else np.zeros(N_POSE)
+        np.array([[l.x, l.y, l.z, l.visibility] for l in result.pose_landmarks]).flatten()
+        if result.pose_landmarks else np.zeros(N_POSE)
     )
     face = (
-        np.array([[l.x, l.y, l.z] for l in results.face_landmarks.landmark]).flatten()
-        if results.face_landmarks
-        else np.zeros(N_FACE)
+        np.array([[l.x, l.y, l.z] for l in result.face_landmarks]).flatten()
+        if result.face_landmarks else np.zeros(N_FACE)
     )
     lh = (
-        np.array([[l.x, l.y, l.z] for l in results.left_hand_landmarks.landmark]).flatten()
-        if results.left_hand_landmarks
-        else np.zeros(N_LEFT_HAND)
+        np.array([[l.x, l.y, l.z] for l in result.left_hand_landmarks]).flatten()
+        if result.left_hand_landmarks else np.zeros(N_LEFT_HAND)
     )
     rh = (
-        np.array([[l.x, l.y, l.z] for l in results.right_hand_landmarks.landmark]).flatten()
-        if results.right_hand_landmarks
-        else np.zeros(N_RIGHT_HAND)
+        np.array([[l.x, l.y, l.z] for l in result.right_hand_landmarks]).flatten()
+        if result.right_hand_landmarks else np.zeros(N_RIGHT_HAND)
     )
     return np.concatenate([pose, face, lh, rh])
 
 
 def extract_landmarks(jpeg_bytes: bytes) -> np.ndarray | None:
     """
-    Decode JPEG bytes and run MediaPipe Holistic on the frame.
+    Decode JPEG bytes and run MediaPipe HolisticLandmarker on the frame.
 
     Returns:
-        1D float32 numpy array of features, or None on failure.
+        1D float32 numpy array of TOTAL_FEATURES features, or None on failure.
     """
+    if _landmarker is None:
+        return None
+
     try:
-        # Decode JPEG → BGR numpy array
         nparr = np.frombuffer(jpeg_bytes, dtype=np.uint8)
         frame_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if frame_bgr is None:
             logger.warning("Failed to decode JPEG frame")
             return None
 
-        # MediaPipe expects RGB
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        frame_rgb.flags.writeable = False
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
 
-        results = _holistic.process(frame_rgb)
+        result = _landmarker.detect(mp_image)
 
-        return _extract_keypoints(results).astype(np.float32)
+        return _extract_keypoints(result).astype(np.float32)
 
     except Exception as e:
         logger.error(f"Error in extract_landmarks: {e}", exc_info=True)
