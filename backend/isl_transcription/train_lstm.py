@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 # Config
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.path.join(BASE_DIR, "dataset_features")
+DATA_DIR = os.path.join(BASE_DIR, "isl_transcription\dataset_features")
 MODEL_DIR = os.path.join(BASE_DIR, "models")
 SEQ_LEN = 30
 FEATURES = 1692
